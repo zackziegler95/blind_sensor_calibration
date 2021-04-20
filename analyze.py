@@ -15,10 +15,10 @@ data = pd.read_csv(f'{data_dir}/GroundTruth.csv')
 times = pd.to_timedelta(data['Elapsed Time [s]'], unit='s')
 times = start_time + times
 
-particle_density = data[f'{size} [mg/m3]']*1000
+particle_density = data[f'{size} [mg/m3]']*333 # 1000 should be right
+particle_density_gt = particle_density.rolling(20).mean()
 times = times - start_time
-times = times.dt.total_seconds()/3600
-plt.plot(times, particle_density, label='GroundTruth')
+times_gt = times.dt.total_seconds()/3600
 
 size = size.replace('.', '')
 
@@ -36,6 +36,8 @@ for i in range(1, num_sensors+1):
     particle_density = particle_density.rolling(20).mean()
 
     plt.plot(times, particle_density, label=f'Sensor{i}')
+
+plt.plot(times_gt, particle_density_gt, label='GroundTruth')
 
 plt.xlabel('Time (hours)')
 plt.ylabel(f'{size} (ug/m3)')
