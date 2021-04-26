@@ -2,17 +2,34 @@ import sys
 import os
 from copy import deepcopy
 import pandas as pd
+import ast
 import numpy as np
 import matplotlib.pyplot as plt
 
+def contains_all_indices(l, n):
+    sorted_l = []
+    for sub_l in l:
+        sorted_l.extend(sub_l)
+    sorted_l = list(sorted(sorted_l))
+    return sorted_l == list(range(n))
+
 class Simulator():
-    def __init__(self, data_dir, num_sensors, size, start_time, delta=1, max_sec=-1):
+    def __init__(self, data_dir, num_sensors, size, start_time, delta=1, max_sec=-1, subsample_freq=1, sensor_proximity_events_file=None):
         # delta is the step time in seconds
         self.delta = delta
+        self.num_sensors = num_sensors
+
+        # Read proximity events
+        prox_events = pd.read_csv(sensor_proximity_events_file, converters={1:ast.literal_eval})
+        times = prox_events['minutes_from_start']*60
+        groups = prox_events['sensorids']
+        self.prox_times = times
+        self.prox_groups = groups
 
         self.all_data = []
         for i in range(1, num_sensors+1):
             data = pd.read_csv(f'{data_dir}/Sensor{i}.csv')
+            data = data.iloc[::subsample_freq, :]
 
             times = data['DeviceTimeStamp']
             times = pd.to_datetime(times, infer_datetime_format=True)
@@ -28,15 +45,33 @@ class Simulator():
 
             particle_density = data[size]
             particle_density = particle_density[cond]
-            #particle_density = particle_density.rolling(20).mean()
             self.all_data.append((times, particle_density))
+
 
     def step(self, t):
         endt = t + self.delta
 
-        for i in range(len(self.all_data)):
+        # update neighbors based on prox_events
+        new_prox_groupings = self.prox_groups[(self.prox_times >= t) & (self.prox_times < endt)]
+        
+        if len(new_prox_groupings) > 0:
+            new_prox_groupings = new_prox_groupings.iloc[-1]
+            assert contains_all_indices(new_prox_groupings, self.num_sensors)
+
+            for i in range(self.num_sensors):
+                for subgroup in new_prox_groupings:
+                    if i in subgroup:
+                        self.neighbors[i] = [subgroup_item for subgroup_item in subgroup if subgroup_item != i]
+                        break
+        
+        print(self.neighbors)
+
+        for i in range(self.num_sensors):
             if self.done[i]:
                 continue
+
+
+            # update values and confidences based on data
 
             times_i = self.all_data[i][0]
             vals_i = self.all_data[i][1]
@@ -68,9 +103,10 @@ class Simulator():
     def simulate(self):
         # all_data is a list of pandas dataframes
         t = 0
-        self.values = [0 for _ in range(len(self.all_data))]
-        self.confidences = [1 for _ in range(len(self.all_data))]
-        self.done = [False for _ in range(len(self.all_data))]
+        self.values = [0 for _ in range(self.num_sensors)]
+        self.confidences = [1 for _ in range(self.num_sensors)]
+        self.done = [False for _ in range(self.num_sensors)]
+        self.neighbors = [[] for _ in range(self.num_sensors)]
 
         while True:
             if t % (60*10) == 0:
@@ -88,18 +124,21 @@ class Simulator():
                 break
 
 def main():
+    # parameters
     data_dir = 'data_tscorrect'
     plot_dir = 'plots_experiment'
     num_sensors = 4
     size = 'PM25'
+    subsample_freq = 1 # i.e. only take every <value>th sample from each sensor
     max_sec = 60*630
+    sensor_proximity_events_file = 'proximity_events/4_occasional_drop.csv'
 
     os.makedirs(plot_dir, exist_ok=True)
 
     start_time = '04/11/2021 01:21:17 PM'
     start_time = pd.to_datetime(start_time, infer_datetime_format=True)
 
-    sim = Simulator(data_dir, num_sensors, size, start_time, max_sec=max_sec)
+    sim = Simulator(data_dir, num_sensors, size, start_time, max_sec=max_sec, subsample_freq=subsample_freq, sensor_proximity_events_file=sensor_proximity_events_file)
     
     results = list(sim.simulate())
     times = [res[0] for res in results]
