@@ -1,4 +1,5 @@
 import sys
+import pickle
 import os
 from copy import deepcopy
 import pandas as pd
@@ -22,6 +23,7 @@ class Simulator():
         # Read proximity events
         prox_events = pd.read_csv(sensor_proximity_events_file, converters={1:ast.literal_eval})
         times = prox_events['minutes_from_start']*60
+        assert times[0] == 0, 'groups should be defined from time 0'
         groups = prox_events['sensorids']
         self.prox_times = times
         self.prox_groups = groups
@@ -64,8 +66,6 @@ class Simulator():
                         self.neighbors[i] = [subgroup_item for subgroup_item in subgroup if subgroup_item != i]
                         break
         
-        print(self.neighbors)
-
         for i in range(self.num_sensors):
             if self.done[i]:
                 continue
@@ -123,43 +123,110 @@ class Simulator():
             if self.check_done():
                 break
 
-def main():
-    # parameters
-    data_dir = 'data_tscorrect'
-    plot_dir = 'plots_experiment'
-    num_sensors = 4
-    size = 'PM25'
-    subsample_freq = 1 # i.e. only take every <value>th sample from each sensor
-    max_sec = 60*630
-    sensor_proximity_events_file = 'proximity_events/4_occasional_drop.csv'
+colorlist = ['b', 'y', 'r', 'g', 'm', 'c', 'indigo', 'darkorange']
+def get_colors_from_group(prox_group, num_sensors):
+    colors = ['' for _ in range(num_sensors)]
+    for j in range(len(prox_group)):
+        for sensorid in prox_group[j]:
+            colors[sensorid] = colorlist[j]
+    return colors
 
-    os.makedirs(plot_dir, exist_ok=True)
-
-    start_time = '04/11/2021 01:21:17 PM'
-    start_time = pd.to_datetime(start_time, infer_datetime_format=True)
-
-    sim = Simulator(data_dir, num_sensors, size, start_time, max_sec=max_sec, subsample_freq=subsample_freq, sensor_proximity_events_file=sensor_proximity_events_file)
-    
-    results = list(sim.simulate())
+def group_results_by_proximity(results, prox_times, prox_groups):
     times = [res[0] for res in results]
     values = [res[1] for res in results]
     confs = [res[2] for res in results]
+    num_sensors = len(values[0])
+
+    last_prox_index = 0
+    no_more_prox_events = len(prox_times) == last_prox_index + 1
+
+    all_groupings = [] # each element of all_groupings is a list of details at each time, each detail is a list with the time, value, conf
+    all_colors = [] # each element of all_colors is a list of the color of each sensor for the duration of that grouping
+    current_grouping = []
+
+    for i in range(len(times)):
+        # prox event triggered
+        if not no_more_prox_events and times[i] >= prox_times[last_prox_index+1]:
+            all_groupings.append(current_grouping)
+            all_colors.append(get_colors_from_group(prox_groups[last_prox_index], num_sensors))
+            current_grouping = []
+            last_prox_index += 1
+            no_more_prox_events = len(prox_times) == last_prox_index + 1
+
+        current_grouping.append([times[i], values[i], confs[i]])
+
+    all_groupings.append(current_grouping)
+    all_colors.append(get_colors_from_group(prox_groups[last_prox_index], num_sensors))           
+
+    return all_groupings, all_colors
+
+
+def main():
+    # parameters
+    runname = 'baseline'
+    data_dir = 'data_tscorrect'
+    plot_dir = 'plots_experiment'
+    sim_results_dir = 'saved_sims'
+    num_sensors = 4
+    size = 'PM25'
+    subsample_freq = 1 # i.e. only take every <value>th sample from each sensor
+    max_sec = 60*630 #60*630
+    sensor_proximity_events_file = 'proximity_events/4_occasional_drop.csv'
+    plot_only = False
+    color_by_group = False
+
+    os.makedirs(plot_dir, exist_ok=True)
+    os.makedirs(sim_results_dir, exist_ok=True)
+    
+    # Run simulation
+    if plot_only:
+        with open(f'{sim_results_dir}/{runname}.pkl', 'rb') as f:
+            combined_results, prox_times, prox_groups = pickle.load(f)
+    else:
+        start_time = '04/11/2021 01:21:17 PM'
+        start_time = pd.to_datetime(start_time, infer_datetime_format=True)
+
+        sim = Simulator(data_dir, num_sensors, size, start_time, max_sec=max_sec, subsample_freq=subsample_freq, sensor_proximity_events_file=sensor_proximity_events_file)
+        
+        combined_results = list(sim.simulate())
+        prox_times = sim.prox_times
+        prox_groups = sim.prox_groups
+        with open(f'{sim_results_dir}/{runname}.pkl', 'wb') as f:
+            pickle.dump([combined_results, prox_times, prox_groups], f)
+
+    # Plot results
+    if color_by_group:
+        result_groups, color_groups = group_results_by_proximity(combined_results, prox_times, prox_groups)
+    else:
+        result_groups = [combined_results]
+        color_groups = [None]
 
     plt.figure()
-    for i in range(num_sensors):
-        vals_i = np.array([val[i] for val in values])
-        confs_i = np.array([conf[i] for conf in confs])
-        plt.plot(times, vals_i, linewidth=0.8, label=f'Sensor{i+1}')
-        plt.fill_between(times, vals_i-confs_i, vals_i+confs_i, alpha=0.2)
+    for groupnum, (results, colors) in enumerate(zip(result_groups, color_groups)):
+        times = [res[0] for res in results]
+        values = [res[1] for res in results]
+        confs = [res[2] for res in results]
+
+        for i in range(num_sensors):
+            vals_i = np.array([val[i] for val in values])
+            confs_i = np.array([conf[i] for conf in confs])
+
+            color = colors[i] if color_by_group else colorlist[i]
+            plt.plot(times, vals_i, linewidth=0.8, color=color, label=f'Sensor{i+1}')
+            plt.fill_between(times, vals_i-confs_i, vals_i+confs_i, alpha=0.2, color=color)
 
     plt.xlabel('Time (seconds)')
     plt.ylabel(f'{size} (ug/m3)')
     plt.ylim([0, 50])
-    plt.legend()
-    plt.savefig(f'{plot_dir}/all_data_{size}.pdf')
+
+    if not color_by_group:
+        plt.legend()
+    plt.savefig(f'{plot_dir}/{runname}_all_data_{size}.pdf')
+    plt.savefig(f'{plot_dir}/{runname}_all_data_{size}.png')
 
     plt.ylim([0, 500])
-    plt.savefig(f'{plot_dir}/all_data_{size}_largescale.pdf')
+    plt.savefig(f'{plot_dir}/{runname}_all_data_{size}_largescale.pdf')
+    plt.savefig(f'{plot_dir}/{runname}_all_data_{size}_largescale.png')
 
 if __name__ == '__main__':
     main()
