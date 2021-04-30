@@ -16,10 +16,11 @@ def contains_all_indices(l, n):
     return sorted_l == list(range(n))
 
 class Simulator():
-    def __init__(self, data_dir, num_sensors, particle_size, start_time, delta=1, max_sec=-1, subsample_freq=1, sensor_proximity_events_file=None):
+    def __init__(self, algorithm, data_dir, num_sensors, particle_size, start_time, delta=1, max_sec=-1, subsample_freq=1, sensor_proximity_events_file=None):
         # delta is the step time in seconds
         self.delta = delta
         self.num_sensors = num_sensors
+        self.algorithm = algorithm
 
         # Read proximity events
         prox_events = pd.read_csv(sensor_proximity_events_file, converters={1:ast.literal_eval})
@@ -78,48 +79,49 @@ class Simulator():
             new_data = vals_i[(times_i > t) & (times_i <= endt)]
 
             # update confidences: "Simple MW update"
-            if len(new_data) > 0:
-                adjustment_rate = 0.1
-                self.values[i] = new_data.iloc[0]
-                # randomly choose other sensor that isn't done
-                other_live_sensor_indices = [j for j in range(self.num_sensors) if not j==i and not self.done[j]]
-                if len(other_live_sensor_indices) == 0:
-                    continue
-                j = choice(other_live_sensor_indices)
-                # take difference in values
-                val_difference = self.values[i] - self.values[j]
-                # update both (just the one?) confidences accordingly
-                # sum_of_confidences = self.confidences[i] + self.confidences[j]
-                multiplicative_adjustment = (1 + adjustment_rate * (abs(val_difference)/self.confidences[i] - 1))
-                self.confidences[i] = self.confidences[i] * multiplicative_adjustment
-                # self.confidences[j] = self.confidences[j] * multiplicative_adjustment
+            if self.algorithm == 'simple':
+                if len(new_data) > 0:
+                    adjustment_rate = 0.1
+                    self.values[i] = new_data.iloc[0]
+                    # randomly choose other sensor that isn't done
+                    other_live_sensor_indices = [j for j in range(self.num_sensors) if not j==i and not self.done[j]]
+                    if len(other_live_sensor_indices) == 0:
+                        continue
+                    j = choice(other_live_sensor_indices)
+                    # take difference in values
+                    val_difference = self.values[i] - self.values[j]
+                    # update both (just the one?) confidences accordingly
+                    multiplicative_adjustment = (1 + adjustment_rate * (abs(val_difference)/self.confidences[i] - 1))
+                    self.confidences[i] = self.confidences[i] * multiplicative_adjustment
 
             # update confidences: "Complex" MW update
-            # if len(new_data) > 0:
-            #     adjustment_rate = 0.1
-            #     self.values[i] = new_data.iloc[0]
-            #     # randomly choose other sensor that isn't done
-            #     other_live_sensor_indices = [j for j in range(self.num_sensors) if not j==i and not self.done[j]]
-            #     if len(other_live_sensor_indices) == 0:
-            #         continue
-            #     j = choice(other_live_sensor_indices)
-            #     # take difference in values
-            #     val_difference = self.values[i] - self.values[j]
-            #     # update both (just the one?) confidences accordingly
-            #     sum_of_confidences = self.confidences[i] + self.confidences[j]
-            #     multiplicative_adjustment = (1 + adjustment_rate * (abs(val_difference)/sum_of_confidences - 1))
-            #     self.confidences[i] = self.confidences[i] * multiplicative_adjustment
-            #     self.confidences[j] = self.confidences[j] * multiplicative_adjustment
+            if self.algorithm == 'complex':
+                if len(new_data) > 0:
+                    adjustment_rate = 0.1
+                    self.values[i] = new_data.iloc[0]
+                    # randomly choose other sensor that isn't done
+                    other_live_sensor_indices = [j for j in range(self.num_sensors) if not j==i and not self.done[j]]
+                    if len(other_live_sensor_indices) == 0:
+                        continue
+                    j = choice(other_live_sensor_indices)
+                    # take difference in values
+                    val_difference = self.values[i] - self.values[j]
+                    # update both (just the one?) confidences accordingly
+                    sum_of_confidences = self.confidences[i] + self.confidences[j]
+                    multiplicative_adjustment = (1 + adjustment_rate * (abs(val_difference)/sum_of_confidences - 1))
+                    self.confidences[i] = self.confidences[i] * multiplicative_adjustment
+                    self.confidences[j] = self.confidences[j] * multiplicative_adjustment
 
             # "Baseline" approach
-            # if len(new_data) > 0:
-            #     self.values[i] = new_data.iloc[0]
-            #     if self.values[i] < 100: # 100 ug/m3
-            #         self.confidences[i] = 11.25
-            #     elif self.values[i] < 1000: # 1000 ug/m3
-            #         self.confidences[i] = self.values[i]*0.1125
-            #     else:
-            #         self.confidences[i] = 999999 # no confidence at all!
+            if self.algorithm == 'baseline':
+                if len(new_data) > 0:
+                    self.values[i] = new_data.iloc[0]
+                    if self.values[i] < 100: # 100 ug/m3
+                        self.confidences[i] = 11.25
+                    elif self.values[i] < 1000: # 1000 ug/m3
+                        self.confidences[i] = self.values[i]*0.1125
+                    else:
+                        self.confidences[i] = 999999 # no confidence at all!
 
             remaining_times = sum(times_i > endt)
             if remaining_times == 0:
@@ -197,20 +199,60 @@ def group_results_by_proximity(results, prox_times, prox_groups):
 
     return all_groupings, all_colors
 
+def calculate_metric_crossval(results):
+    num_sensors = len(results[0][1])
+    
+    total_in_bounds = 0
+    total_in_bounds_options = 0
+
+    total_dist_when_in_bounds = 0
+    total_dist_when_in_bounds_options = 0
+    for time, value, conf in results:
+        value = np.array(value)
+        conf = np.array(conf)
+
+        upper_bounds = value + conf
+        lower_bounds = value - conf
+        
+        # number of sensors that are in bounds of the other sensors
+        val_ext = value[:, np.newaxis]
+        ub_ext = upper_bounds[np.newaxis, :]
+        lb_ext = lower_bounds[np.newaxis, :]
+        in_bounds = np.logical_and(val_ext < ub_ext, val_ext > lb_ext) # [N, N]
+        np.fill_diagonal(in_bounds, 0)
+        total_in_bounds += in_bounds.sum()
+        total_in_bounds_options += (num_sensors-1)*num_sensors
+
+        # distance between sensor values and confidence bounds
+        dist_to_ub = np.maximum(ub_ext - val_ext, 0)
+        dist_to_lb = -np.minimum(lb_ext - val_ext, 0)
+        min_dist = np.minimum(dist_to_ub, dist_to_lb)
+        np.fill_diagonal(min_dist, 0)
+
+        total_dist_when_in_bounds += min_dist.sum()
+        total_dist_when_in_bounds_options += (num_sensors-1)*num_sensors
+    
+    avg_in_bounds = total_in_bounds/total_in_bounds_options
+    avg_dist_when_in_bounds = total_dist_when_in_bounds/total_dist_when_in_bounds_options
+
+    return avg_in_bounds, avg_dist_when_in_bounds
 
 def main():
     # parameters
-    runname = 'simple_mult_updates'
+    runname = 'test_metrics'
+    algorithm = 'simple'
     data_dir = 'data_tscorrect'
     plot_dir = 'plots_experiment'
     sim_results_dir = 'saved_sims'
     num_sensors = 4
     particle_size = 'PM25'
     subsample_freq = 1 # i.e. only take every <value>th sample from each sensor
-    max_sec = 60*630 #60*630
+    max_sec = 60*50 #60*630
     sensor_proximity_events_file = 'proximity_events/4_constant.csv'
     plot_only = False
     color_by_group = False
+
+    runname = runname+'_'+algorithm
 
     os.makedirs(plot_dir, exist_ok=True)
     os.makedirs(sim_results_dir, exist_ok=True)
@@ -223,13 +265,18 @@ def main():
         start_time = '04/11/2021 01:21:17 PM'
         start_time = pd.to_datetime(start_time, infer_datetime_format=True)
 
-        sim = Simulator(data_dir, num_sensors, particle_size, start_time, max_sec=max_sec, subsample_freq=subsample_freq, sensor_proximity_events_file=sensor_proximity_events_file)
+        sim = Simulator(algorithm, data_dir, num_sensors, particle_size, start_time, max_sec=max_sec, subsample_freq=subsample_freq, sensor_proximity_events_file=sensor_proximity_events_file)
 
         combined_results = list(sim.simulate())
         prox_times = sim.prox_times
         prox_groups = sim.prox_groups
         with open(f'{sim_results_dir}/{runname}.pkl', 'wb') as f:
             pickle.dump([combined_results, prox_times, prox_groups], f)
+
+    # Calculate "correctness" metrics
+    avg_in_bounds, avg_dist_when_in_bounds = calculate_metric_crossval(combined_results)
+    print(f'Average number of readings inside co-located sensor confidence intervals: {avg_in_bounds:0.3f}')
+    print(f'Average distance from sensor readings to co-located sensor confidence bound when inside bound: {avg_dist_when_in_bounds:0.3f}')
 
     # Plot results
     if color_by_group:
@@ -255,6 +302,7 @@ def main():
     plt.xlabel('Time (seconds)')
     plt.ylabel(f'{particle_size} (ug/m3)')
     plt.ylim([0, 50])
+    plt.title(f'Metric 1: {avg_in_bounds:0.3f}   Metric 2: {avg_dist_when_in_bounds:0.3f}')
 
     if not color_by_group:
         plt.legend()
