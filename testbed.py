@@ -199,7 +199,7 @@ def group_results_by_proximity(results, prox_times, prox_groups):
 
     return all_groupings, all_colors
 
-def calculate_metric_crossval(results):
+def calculate_metric_crossval(results, uncertainty_scale=1, val_smoothing=0):
     num_sensors = len(results[0][1])
     
     total_in_bounds = 0
@@ -207,15 +207,18 @@ def calculate_metric_crossval(results):
 
     total_dist_when_in_bounds = 0
     total_dist_when_in_bounds_options = 0
+
+    prev_value = np.zeros([num_sensors])
     for time, value, conf in results:
         value = np.array(value)
-        conf = np.array(conf)
+        smooth_value = prev_value*val_smoothing + value*(1-val_smoothing)
+        conf = np.array(conf)*uncertainty_scale
 
         upper_bounds = value + conf
         lower_bounds = value - conf
         
         # number of sensors that are in bounds of the other sensors
-        val_ext = value[:, np.newaxis]
+        val_ext = smooth_value[:, np.newaxis]
         ub_ext = upper_bounds[np.newaxis, :]
         lb_ext = lower_bounds[np.newaxis, :]
         in_bounds = np.logical_and(val_ext < ub_ext, val_ext > lb_ext) # [N, N]
@@ -230,27 +233,43 @@ def calculate_metric_crossval(results):
         np.fill_diagonal(min_dist, 0)
 
         total_dist_when_in_bounds += min_dist.sum()
-        total_dist_when_in_bounds_options += (num_sensors-1)*num_sensors
+        total_dist_when_in_bounds_options += in_bounds.sum()
+        prev_value = smooth_value
     
     avg_in_bounds = total_in_bounds/total_in_bounds_options
     avg_dist_when_in_bounds = total_dist_when_in_bounds/total_dist_when_in_bounds_options
 
     return avg_in_bounds, avg_dist_when_in_bounds
 
+def smooth_values(results, smoothing=0):
+    num_sensors = len(results[0][1])
+
+    prev_value = np.zeros([num_sensors])
+    new_results = []
+    for time, value, conf in results:
+        value = np.array(value)
+        smooth_value = prev_value*smoothing + value*(1-smoothing)
+        new_results.append([time, smooth_value.tolist(), conf])
+        prev_value = smooth_value
+
+    return new_results
+
 def main():
     # parameters
-    runname = 'test_metrics'
-    algorithm = 'simple'
+    runname = 'final_4sensors'
+    algorithm = 'baseline'
     data_dir = 'data_tscorrect'
     plot_dir = 'plots_experiment'
     sim_results_dir = 'saved_sims'
     num_sensors = 4
     particle_size = 'PM25'
     subsample_freq = 1 # i.e. only take every <value>th sample from each sensor
-    max_sec = 60*50 #60*630
+    max_sec = 60*630 #60*630
     sensor_proximity_events_file = 'proximity_events/4_constant.csv'
-    plot_only = False
+    plot_only = True
     color_by_group = False
+    val_smoothing = 0
+    notitle = True
 
     runname = runname+'_'+algorithm
 
@@ -279,6 +298,12 @@ def main():
     print(f'Average distance from sensor readings to co-located sensor confidence bound when inside bound: {avg_dist_when_in_bounds:0.3f}')
 
     # Plot results
+    if val_smoothing > 0:
+        assert not color_by_group
+        smooth_combined_results = smooth_values(combined_results, val_smoothing)
+    else:
+        smooth_combined_results = combined_results
+
     if color_by_group:
         result_groups, color_groups = group_results_by_proximity(combined_results, prox_times, prox_groups)
     else:
@@ -290,28 +315,32 @@ def main():
         times = [res[0] for res in results]
         values = [res[1] for res in results]
         confs = [res[2] for res in results]
+        smooth_vals = [res[1] for res in smooth_combined_results]
 
         for i in range(num_sensors):
             vals_i = np.array([val[i] for val in values])
             confs_i = np.array([conf[i] for conf in confs])
+            smooth_vals_i = np.array([val[i] for val in smooth_vals])
 
             color = colors[i] if color_by_group else colorlist[i]
-            plt.plot(times, vals_i, linewidth=0.8, color=color, label=f'Sensor{i+1}')
+            plt.plot(times, smooth_vals_i, linewidth=0.8, color=color, label=f'Sensor{i+1}')
             plt.fill_between(times, vals_i-confs_i, vals_i+confs_i, alpha=0.2, color=color)
 
     plt.xlabel('Time (seconds)')
     plt.ylabel(f'{particle_size} (ug/m3)')
     plt.ylim([0, 50])
-    plt.title(f'Metric 1: {avg_in_bounds:0.3f}   Metric 2: {avg_dist_when_in_bounds:0.3f}')
+
+    if not notitle:
+        plt.title(f'Metric 1: {avg_in_bounds:0.3f}   Metric 2: {avg_dist_when_in_bounds:0.3f}')
 
     if not color_by_group:
         plt.legend()
-    plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}.pdf')
-    plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}.png')
+    plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}_smooth{val_smoothing}.pdf')
+    plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}_smooth{val_smoothing}.png')
 
     plt.ylim([0, 500])
-    plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}_largescale.pdf')
-    plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}_largescale.png')
+    plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}_smooth{val_smoothing}_largescale.pdf')
+    plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}_smooth{val_smoothing}_largescale.png')
 
 if __name__ == '__main__':
     main()
