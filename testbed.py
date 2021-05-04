@@ -16,9 +16,10 @@ def contains_all_indices(l, n):
     return sorted_l == list(range(n))
 
 class Simulator():
-    def __init__(self, algorithm, data_dir, num_sensors, particle_size, start_time, delta=1, max_sec=-1, subsample_freq=1, sensor_proximity_events_file=None):
+    def __init__(self, algorithm, data_dir, num_sensors, particle_size, start_time, delta=1, ghosts=False, max_sec=-1, subsample_freq=1, sensor_proximity_events_file=None):
         # delta is the step time in seconds
         self.delta = delta
+        self.ghosts = ghosts
         self.num_sensors = num_sensors
         self.algorithm = algorithm
 
@@ -78,23 +79,25 @@ class Simulator():
             vals_i = self.all_data[i][1]
             new_data = vals_i[(times_i > t) & (times_i <= endt)]
 
-            # update confidences: "Simple MW update"
+            # update confidences: "Simple" multiplicative update
             if self.algorithm == 'simple':
                 if len(new_data) > 0:
                     adjustment_rate = 0.1
                     self.values[i] = new_data.iloc[0]
                     # randomly choose other sensor that isn't done
-                    other_live_sensor_indices = [j for j in range(self.num_sensors) if not j==i and not self.done[j]]
-                    if len(other_live_sensor_indices) == 0:
+                    other_live_sensor_indices = [j for j in self.neighbors[i] if not self.done[j]]
+                    measurement_differences = [abs(self.values[i] - self.values[j]) for j in other_live_sensor_indices]
+                    if self.ghosts:
+                        baseline_uncertainty = min(11.25, self.values[i]*0.1125)
+                        measurement_differences.append(baseline_uncertainty)
+                    if len(measurement_differences) == 0:
                         continue
-                    j = choice(other_live_sensor_indices)
-                    # take difference in values
-                    val_difference = self.values[i] - self.values[j]
+                    val_difference = choice(measurement_differences)
                     # update both (just the one?) confidences accordingly
-                    multiplicative_adjustment = (1 + adjustment_rate * (abs(val_difference)/self.confidences[i] - 1))
+                    multiplicative_adjustment = (1 + adjustment_rate * (val_difference/self.confidences[i] - 1))
                     self.confidences[i] = self.confidences[i] * multiplicative_adjustment
 
-            # update confidences: "Complex" MW update
+            # update confidences: "Complex" multiplicative update
             if self.algorithm == 'complex':
                 if len(new_data) > 0:
                     adjustment_rate = 0.1
@@ -201,7 +204,7 @@ def group_results_by_proximity(results, prox_times, prox_groups):
 
 def calculate_metric_crossval(results, uncertainty_scale=1, val_smoothing=0):
     num_sensors = len(results[0][1])
-    
+
     total_in_bounds = 0
     total_in_bounds_options = 0
 
@@ -216,7 +219,7 @@ def calculate_metric_crossval(results, uncertainty_scale=1, val_smoothing=0):
 
         upper_bounds = value + conf
         lower_bounds = value - conf
-        
+
         # number of sensors that are in bounds of the other sensors
         val_ext = smooth_value[:, np.newaxis]
         ub_ext = upper_bounds[np.newaxis, :]
@@ -235,7 +238,7 @@ def calculate_metric_crossval(results, uncertainty_scale=1, val_smoothing=0):
         total_dist_when_in_bounds += min_dist.sum()
         total_dist_when_in_bounds_options += in_bounds.sum()
         prev_value = smooth_value
-    
+
     avg_in_bounds = total_in_bounds/total_in_bounds_options
     avg_dist_when_in_bounds = total_dist_when_in_bounds/total_dist_when_in_bounds_options
 
@@ -254,19 +257,20 @@ def smooth_values(results, smoothing=0):
 
     return new_results
 
+
 def main():
     # parameters
-    runname = 'final_4sensors'
-    algorithm = 'baseline'
+    runname = 'drop'
+    algorithm = 'simple'
     data_dir = 'data_tscorrect'
     plot_dir = 'plots_experiment'
     sim_results_dir = 'saved_sims'
     num_sensors = 4
     particle_size = 'PM25'
     subsample_freq = 1 # i.e. only take every <value>th sample from each sensor
-    max_sec = 60*630 #60*630
-    sensor_proximity_events_file = 'proximity_events/4_constant.csv'
-    plot_only = True
+    max_sec = 60*630
+    sensor_proximity_events_file = 'proximity_events/4_occasional_drop.csv'
+    plot_only = False
     color_by_group = False
     val_smoothing = 0
     notitle = True
@@ -284,7 +288,7 @@ def main():
         start_time = '04/11/2021 01:21:17 PM'
         start_time = pd.to_datetime(start_time, infer_datetime_format=True)
 
-        sim = Simulator(algorithm, data_dir, num_sensors, particle_size, start_time, max_sec=max_sec, subsample_freq=subsample_freq, sensor_proximity_events_file=sensor_proximity_events_file)
+        sim = Simulator(algorithm, data_dir, num_sensors, particle_size, start_time, ghosts=False, max_sec=max_sec, subsample_freq=subsample_freq, sensor_proximity_events_file=sensor_proximity_events_file)
 
         combined_results = list(sim.simulate())
         prox_times = sim.prox_times
@@ -341,6 +345,7 @@ def main():
     plt.ylim([0, 500])
     plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}_smooth{val_smoothing}_largescale.pdf')
     plt.savefig(f'{plot_dir}/{runname}_all_data_{particle_size}_smooth{val_smoothing}_largescale.png')
+
 
 if __name__ == '__main__':
     main()
