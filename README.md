@@ -6,15 +6,20 @@ Alex Cabral, Greg Kehne, Zack Ziegler
 This repository contains the data, code, and plots for the project. There are two datasets included, the second with the suffix `_new`, although we only ended up using the first because it had examples of all the phenomina we were interested in. For completeness, we've included the second dataset as well. Additionally, each dataset includes readings from a single high quality sensor designated as the "ground truth," and 8 smaller and cheaper sensors which make up the distributed network. Initial experiments indicated that the ground truth was not comparable with the other sensors, so in the end we only used data from the distributed sensor network.
 
 `correct_timestamps(_new).py` - data preprocessing (see below)
+
 `analyze(_new).py` - initial plots exploring the data
+
 `testbed.py` - main simulation, algorithm and plotting code
+
 `plot_roc_curves.py` - plotting roc curves from multiple simulation runs on a single plot
+
 
 ## Data processing
 
 The raw data as output by the sensors is stored in `data`. There appears to be an issue with the sensor data logging code as it doesn't indicate AM or PM, so as a first step we run `correct_timestamps(_new).py` to correct the timesteps. The output is stored in a new directory called `data_tscorrect`.
 
 Additionally, we initially explore the data with `analyze(_new).py`. Some care is needed here to align the data properly because the two types of sensors report the data in a different format, with different units, and different time zones.
+
 
 ## testbed.py
 
@@ -28,13 +33,17 @@ To simulate sensors moving around to be in contact with different sets of neighb
 
 At the end of a simulation, the `results` object containing the set of observation times and the values and uncertainties at each time is saved in `saved_sims` for future analysis. A plot of the simulation run is also generated, showing the values and confidences at each point for all sensors.
 
+
 ### Algorithms
 
 Three algorithms are implemented:
 
 `baseline` - The factory default baseline that simply reports the uncertainty according to the sensor documentation.
-`complex` - An initial pass at our algorithm, that uses a more complicated update rule than what we ended up with. This is not reported in the paper
+
+`complex` - An initial pass at our algorithm, that uses a more complicated update rule than what we ended up with. This is not reported in the paper.
+
 `simple` - The algorithm we ended up discussing in the paper. It uses a simpler update rule than `comlex`.
+
 
 ## ROC curve creation
 
