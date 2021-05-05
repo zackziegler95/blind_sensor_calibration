@@ -1,3 +1,6 @@
+# Same thing as correct_timestamps, but for the second set of data. We didn't end up using
+# this data for the project
+
 import glob
 import os
 

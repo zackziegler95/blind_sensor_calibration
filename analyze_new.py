@@ -1,3 +1,5 @@
+# Same plotting as analyze.py, but for the second set of data we didn't end up using
+
 import sys
 import glob
 import os
@@ -11,6 +13,7 @@ size = 'PM1'
 
 os.makedirs(plot_dir, exist_ok=True)
 
+# Here the ground truth is separated into two separate captures
 start_time = '04/15/2021 07:48:12 PM'
 start_time = pd.to_datetime(start_time, infer_datetime_format=True)
 data = pd.read_csv(f'{data_dir}/BaselineGroundTruth.csv')
@@ -43,13 +46,13 @@ plt.figure()
 plt.plot(times_gt, particle_density_gt, 'blue', label='GroundTruth')
 plt.plot(times_gt2, particle_density_gt2, 'blue', label='GroundTruth')
 
+# The cheap sensors have a single capture for the full time period
 for i in range(1, num_sensors+1):
     fname = glob.glob(f'{data_dir}/Sensor{i}*.csv')[0]
     print(fname)
     data = pd.read_csv(fname)
 
     times = data['DeviceTimeStamp']
-    print(times)
     times = pd.to_datetime(times, infer_datetime_format=True)
     times = times - pd.DateOffset(hours=4)
     times = times - start_time

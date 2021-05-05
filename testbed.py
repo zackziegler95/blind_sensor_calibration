@@ -9,6 +9,9 @@ import matplotlib.pyplot as plt
 from random import choice
 
 def contains_all_indices(l, n):
+    # l is a list of lists
+    # n is an integer
+    # returns True if the sublists combined contain exactly range(0, n)
     sorted_l = []
     for sub_l in l:
         sorted_l.extend(sub_l)
@@ -16,6 +19,17 @@ def contains_all_indices(l, n):
     return sorted_l == list(range(n))
 
 class Simulator():
+    '''
+        Simulate the process of querying each sensor at a fixed interval
+        Reads data from a folder data_dir to get the sensor reading events
+        Optionally reads data from a proximity events file to simulate sensors changing
+            their neighborhood
+        At a high level, the simulator takes small discrete time steps and updates the global
+            confidences at each step. If a sensor reading happened during the time step,
+            the global sensor value is updated accordingly.
+        The simulator is stateful, as values and confidences are updated globally
+    '''
+
     def __init__(self, algorithm, data_dir, num_sensors, particle_size, start_time, delta=1, ghosts=False, max_sec=-1, subsample_freq=1, sensor_proximity_events_file=None):
         # delta is the step time in seconds
         self.delta = delta
@@ -37,6 +51,7 @@ class Simulator():
             data = pd.read_csv(f'{data_dir}/Sensor{i}.csv')
             data = data.iloc[::subsample_freq, :]
 
+            # need to adjust the times so the format becomes seconds since a fixed time
             times = data['DeviceTimeStamp']
             times = pd.to_datetime(times, infer_datetime_format=True)
             times = times - pd.DateOffset(hours=4)
@@ -48,16 +63,18 @@ class Simulator():
                 cond = cond & (times < max_sec)
             times = times[cond]
 
-
+            # no need to modify the particle density
             particle_density = data[particle_size]
             particle_density = particle_density[cond]
             self.all_data.append((times, particle_density))
 
 
     def step(self, t):
+        # This is the main function of the simulator, which takes a step and updates the state
+        # Updates are different depending on the algorithm
         endt = t + self.delta
 
-        # update neighbors based on prox_events
+        # always update neighbors based on prox_events
         new_prox_groupings = self.prox_groups[(self.prox_times >= t) & (self.prox_times < endt)]
         if len(new_prox_groupings) > 0:
             new_prox_groupings = new_prox_groupings.iloc[-1]
@@ -69,6 +86,7 @@ class Simulator():
                         self.neighbors[i] = [subgroup_item for subgroup_item in subgroup if subgroup_item != i]
                         break
 
+        # actually do the update for each sensor
         for i in range(self.num_sensors):
             # skip sensors which have run out of data
             if self.done[i]:
@@ -126,6 +144,7 @@ class Simulator():
                     else:
                         self.confidences[i] = 999999 # no confidence at all!
 
+            # the sensor is done if there are no more reading events in the data
             remaining_times = sum(times_i > endt)
             if remaining_times == 0:
                 self.done[i] = True
@@ -135,38 +154,47 @@ class Simulator():
         return t
 
     def check_done(self):
+        # check if all the sensors indicate done
         for done in self.done:
             if not done:
                 return False
         return True
 
     def simulate(self):
-        # all_data is a list of pandas dataframes
+        # this function is an iterator, yields the sensor values and confidences at each step
+
         t = 0
-        # stores current vals and confidences:
+
+        # initialize the values, confidences, and sets for each state
         self.values = [0 for _ in range(self.num_sensors)]
         self.confidences = [1 for _ in range(self.num_sensors)]
-        # keeps track of whether sensor has run out of data:
         self.done = [False for _ in range(self.num_sensors)]
-        self.neighbors = [[] for _ in range(self.num_sensors)]
+        self.neighbors = [[] for _ in range(self.num_sensors)] # guarenteed to update at the first step
 
+        # Iterate until all sensors indicate they have no more readings
         while True:
             if t % (60*10) == 0:
                 minutes = t//60
                 print(f'{minutes} minutes elapsed')
 
+            # all the work happens here
             t = self.step(t)
 
+            # save the state to return
             ret_vals = deepcopy(self.values)
             ret_confs = deepcopy(self.confidences)
 
             yield t, ret_vals, ret_confs
 
+            # check if everyone is done
             if self.check_done():
                 break
 
 colorlist = ['b', 'y', 'r', 'g', 'm', 'c', 'indigo', 'darkorange']
 def get_colors_from_group(prox_group, num_sensors):
+    # return a flat list of colors for each sensor, determined by the group
+    # prox_group is a list of lists, indicating the groupings of the sensor
+    # num_sensors is an integer
     colors = ['' for _ in range(num_sensors)]
     for j in range(len(prox_group)):
         for sensorid in prox_group[j]:
@@ -174,11 +202,16 @@ def get_colors_from_group(prox_group, num_sensors):
     return colors
 
 def group_results_by_proximity(results, prox_times, prox_groups):
+    # convert a single set of results into a list of sets of results, one set of results per group
+    # output:
+    #   all_groupings - a list of results, one per group
+    #   all_colors - a list of lists, one per group. The inner list has the color of each sensor during the given grouping
     times = [res[0] for res in results]
     values = [res[1] for res in results]
     confs = [res[2] for res in results]
     num_sensors = len(values[0])
 
+    # current state
     last_prox_index = 0
     no_more_prox_events = len(prox_times) == last_prox_index + 1
 
@@ -186,6 +219,8 @@ def group_results_by_proximity(results, prox_times, prox_groups):
     all_colors = [] # each element of all_colors is a list of the color of each sensor for the duration of that grouping
     current_grouping = []
 
+    # loop through the times in order. When the sensor grouping changes, that indicates
+    # the end of the previous result set and the start of the next set
     for i in range(len(times)):
         # prox event triggered
         if not no_more_prox_events and times[i] >= prox_times[last_prox_index+1]:
@@ -203,6 +238,9 @@ def group_results_by_proximity(results, prox_times, prox_groups):
     return all_groupings, all_colors
 
 def calculate_metric_crossval(results, uncertainty_scale=1, val_smoothing=0):
+    # calculates the InBounds and DistFromBound metrics
+    # uncertainty scale is the conservativeness scaling metric
+    # val_smoothing controls how much smoothing to apply to the value series
     num_sensors = len(results[0][1])
 
     total_in_bounds = 0
@@ -214,7 +252,7 @@ def calculate_metric_crossval(results, uncertainty_scale=1, val_smoothing=0):
     prev_value = np.zeros([num_sensors])
     for time, value, conf in results:
         value = np.array(value)
-        smooth_value = prev_value*val_smoothing + value*(1-val_smoothing)
+        smooth_value = prev_value*val_smoothing + value*(1-val_smoothing) # standard EMA
         conf = np.array(conf)*uncertainty_scale
 
         upper_bounds = value + conf
@@ -236,7 +274,7 @@ def calculate_metric_crossval(results, uncertainty_scale=1, val_smoothing=0):
         np.fill_diagonal(min_dist, 0)
 
         total_dist_when_in_bounds += min_dist.sum()
-        total_dist_when_in_bounds_options += in_bounds.sum()
+        total_dist_when_in_bounds_options += in_bounds.sum() # denominator is sensors within the bounds
         prev_value = smooth_value
 
     avg_in_bounds = total_in_bounds/total_in_bounds_options
@@ -245,13 +283,14 @@ def calculate_metric_crossval(results, uncertainty_scale=1, val_smoothing=0):
     return avg_in_bounds, avg_dist_when_in_bounds
 
 def smooth_values(results, smoothing=0):
+    # Apply an EMA to the values component of a given results set
     num_sensors = len(results[0][1])
 
     prev_value = np.zeros([num_sensors])
     new_results = []
     for time, value, conf in results:
         value = np.array(value)
-        smooth_value = prev_value*smoothing + value*(1-smoothing)
+        smooth_value = prev_value*smoothing + value*(1-smoothing) # standard EMA
         new_results.append([time, smooth_value.tolist(), conf])
         prev_value = smooth_value
 
@@ -261,14 +300,14 @@ def smooth_values(results, smoothing=0):
 def main():
     # parameters
     runname = 'drop'
-    algorithm = 'simple'
+    algorithm = 'simple' # [baseline, simple, complex]
     data_dir = 'data_tscorrect'
     plot_dir = 'plots_experiment'
     sim_results_dir = 'saved_sims'
-    num_sensors = 4
+    num_sensors = 4 # up to 8 for this dataset
     particle_size = 'PM25'
     subsample_freq = 1 # i.e. only take every <value>th sample from each sensor
-    max_sec = 60*630
+    max_sec = 60*630 # time in seconds
     sensor_proximity_events_file = 'proximity_events/4_occasional_drop.csv'
     plot_only = False
     color_by_group = False
@@ -280,19 +319,22 @@ def main():
     os.makedirs(plot_dir, exist_ok=True)
     os.makedirs(sim_results_dir, exist_ok=True)
 
-    # Run simulation
+    # Handle either loading from a saved simulation or running the simulation
     if plot_only:
         with open(f'{sim_results_dir}/{runname}.pkl', 'rb') as f:
             combined_results, prox_times, prox_groups = pickle.load(f)
     else:
+        # start_time is needed to anchor all sensors
         start_time = '04/11/2021 01:21:17 PM'
         start_time = pd.to_datetime(start_time, infer_datetime_format=True)
 
         sim = Simulator(algorithm, data_dir, num_sensors, particle_size, start_time, ghosts=False, max_sec=max_sec, subsample_freq=subsample_freq, sensor_proximity_events_file=sensor_proximity_events_file)
 
-        combined_results = list(sim.simulate())
+        combined_results = list(sim.simulate()) # all the work happens here
         prox_times = sim.prox_times
         prox_groups = sim.prox_groups
+
+        # Save results to make changing the plots/analysis easier later
         with open(f'{sim_results_dir}/{runname}.pkl', 'wb') as f:
             pickle.dump([combined_results, prox_times, prox_groups], f)
 
@@ -308,12 +350,14 @@ def main():
     else:
         smooth_combined_results = combined_results
 
+    # to ease plotting, break results into group by proximity events if coloring by group
     if color_by_group:
         result_groups, color_groups = group_results_by_proximity(combined_results, prox_times, prox_groups)
     else:
-        result_groups = [combined_results]
+        result_groups = [combined_results] # only a single proximity grouping
         color_groups = [None]
 
+    # Actually do the plotting
     plt.figure()
     for groupnum, (results, colors) in enumerate(zip(result_groups, color_groups)):
         times = [res[0] for res in results]
@@ -321,6 +365,7 @@ def main():
         confs = [res[2] for res in results]
         smooth_vals = [res[1] for res in smooth_combined_results]
 
+        # Plot the full time series for each sensor at once
         for i in range(num_sensors):
             vals_i = np.array([val[i] for val in values])
             confs_i = np.array([conf[i] for conf in confs])
@@ -330,6 +375,7 @@ def main():
             plt.plot(times, smooth_vals_i, linewidth=0.8, color=color, label=f'Sensor{i+1}')
             plt.fill_between(times, vals_i-confs_i, vals_i+confs_i, alpha=0.2, color=color)
 
+    # Misc plot labels
     plt.xlabel('Time (seconds)')
     plt.ylabel(f'{particle_size} (ug/m3)')
     plt.ylim([0, 50])
